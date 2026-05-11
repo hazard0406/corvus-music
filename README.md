@@ -1,2 +1,0 @@
-# corvus-music
-project spot
