@@ -1,0 +1,252 @@
+import { useState, useRef, useEffect } from "react";
+
+const MODEL = "gemini-1.5-flash";
+const SAVE_KEY = "scene_book_gemini";
+
+export default function BookGenerator() {
+  const [idea, setIdea] = useState("");
+  const [seriesContext, setSeriesContext] = useState("");
+  const [outline, setOutline] = useState(null);
+  const [chapterIndex, setChapterIndex] = useState(0);
+  const [scenes, setScenes] = useState([]);
+  const [currentScene, setCurrentScene] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [feedback, setFeedback] = useState("");
+  const [sceneCountInChapter, setSceneCountInChapter] = useState(0);
+  const [error, setError] = useState("");
+
+  const containerRef = useRef(null);
+
+  // ⚠️ PUT YOUR OWN KEY HERE
+  const API_KEY = "AIzaSyBwxOFMb4he9IX7gWcaUC2djmBhJtT93Kg";
+
+  // ---------- SAFE JSON PARSER ----------
+  const safeJSONParse = (text) => {
+    try {
+      if (!text || typeof text !== "string") throw new Error("Empty response");
+      const cleaned = text.replace(/```json|```/g, "").trim();
+      return JSON.parse(cleaned);
+    } catch (e) {
+      console.error("JSON parse failed:", text);
+      return null;
+    }
+  };
+
+  // ---------- SAVE / LOAD ----------
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem(SAVE_KEY);
+      if (saved) {
+        const data = JSON.parse(saved);
+        setIdea(data.idea || "");
+        setSeriesContext(data.seriesContext || "");
+        setOutline(data.outline || null);
+        setChapterIndex(data.chapterIndex || 0);
+        setScenes(data.scenes || []);
+        setCurrentScene(data.currentScene || "");
+        setSceneCountInChapter(data.sceneCountInChapter || 0);
+      }
+    } catch (e) {
+      console.error("Load failed", e);
+    }
+  }, []);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(
+        SAVE_KEY,
+        JSON.stringify({ idea, seriesContext, outline, chapterIndex, scenes, currentScene, sceneCountInChapter })
+      );
+    } catch (e) {
+      console.error("Save failed", e);
+    }
+  }, [idea, seriesContext, outline, chapterIndex, scenes, currentScene, sceneCountInChapter]);
+
+  // ---------- GEMINI CALL (SAFE) ----------
+  const callGemini = async (prompt) => {
+    try {
+      const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent?key=${API_KEY}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: prompt }] }]
+        })
+      });
+
+      const data = await res.json();
+
+      const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+
+      if (!text) {
+        console.error("Bad API response:", data);
+        throw new Error("Empty AI response");
+      }
+
+      return text;
+    } catch (e) {
+      setError("API error: " + e.message);
+      return "";
+    }
+  };
+
+  // ---------- FAKE STREAM ----------
+  const streamText = async (fullText, setter) => {
+    let current = "";
+    const words = fullText.split(" ");
+
+    for (let i = 0; i < words.length; i++) {
+      current += words[i] + " ";
+      setter(current);
+      await new Promise((r) => setTimeout(r, 8));
+    }
+
+    return fullText;
+  };
+
+  // ---------- LOGIC ----------
+  const generateOutline = async () => {
+    setLoading(true);
+    setError("");
+
+    const text = await callGemini(`Create a novel outline for this idea:\n${idea}\n\nSeries context:\n${seriesContext}\n\nReturn ONLY valid JSON:\n{"title":"","chapters":[{"number":1,"title":"","summary":""}]}`);
+
+    const parsed = safeJSONParse(text);
+
+    if (!parsed) {
+      setError("Failed to parse outline. Try again.");
+    } else {
+      setOutline(parsed);
+    }
+
+    setLoading(false);
+  };
+
+  const summarizeStory = async () => {
+    if (scenes.length < 3) return "";
+    return await callGemini(`Summarize this story so far in 5 sentences:\n${scenes.join("\n\n")}`);
+  };
+
+  const buildPrompt = async (mode = "next") => {
+    const chapter = outline.chapters[chapterIndex];
+    const summary = await summarizeStory();
+
+    return `You are a novelist.
+
+Book: ${outline.title}
+Chapter ${chapter.number}: ${chapter.title}
+Summary: ${chapter.summary}
+
+Series context:\n${seriesContext}
+
+Story summary:\n${summary}
+
+Recent scenes:\n${scenes.slice(-2).join("\n\n")}
+
+${
+  mode === "continue"
+    ? `Continue this scene:\n${currentScene}`
+    : mode === "rewrite"
+    ? `Rewrite this scene with feedback:\n${currentScene}\nFeedback: ${feedback}`
+    : `Write the next scene.`
+}
+
+Write 500-800 words. Maintain consistency and end naturally.`;
+  };
+
+  const runScene = async (mode) => {
+    setLoading(true);
+    setError("");
+    setCurrentScene("");
+
+    const prompt = await buildPrompt(mode);
+    const text = await callGemini(prompt);
+
+    if (!text) {
+      setLoading(false);
+      return;
+    }
+
+    await streamText(text, setCurrentScene);
+
+    setLoading(false);
+  };
+
+  const acceptScene = () => {
+    const updated = [...scenes, currentScene];
+    setScenes(updated);
+    setCurrentScene("");
+
+    const newCount = sceneCountInChapter + 1;
+    setSceneCountInChapter(newCount);
+
+    if (newCount >= 3 && chapterIndex < outline.chapters.length - 1) {
+      setChapterIndex(chapterIndex + 1);
+      setSceneCountInChapter(0);
+    }
+  };
+
+  const exportBook = () => {
+    const text = scenes.join("\n\n---\n\n");
+    navigator.clipboard.writeText(text);
+    alert("Book copied!");
+  };
+
+  // ---------- UI ----------
+  return (
+    <div style={{ padding: 20, fontFamily: "Georgia" }} ref={containerRef}>
+      {error && <div style={{ color: "red", marginBottom: 10 }}>{error}</div>}
+
+      {!outline && (
+        <div>
+          <h2>Enter your book idea</h2>
+          <textarea value={idea} onChange={(e) => setIdea(e.target.value)} style={{ width: "100%", height: 120 }} />
+
+          <h3>Previous books in series</h3>
+          <textarea value={seriesContext} onChange={(e) => setSeriesContext(e.target.value)} style={{ width: "100%", height: 100 }} />
+
+          <button onClick={generateOutline} disabled={loading || !idea.trim()}>
+            {loading ? "Generating..." : "Generate Outline"}
+          </button>
+        </div>
+      )}
+
+      {outline && (
+        <div>
+          <h2>{outline.title}</h2>
+          <h4>Chapter {outline.chapters[chapterIndex]?.number}: {outline.chapters[chapterIndex]?.title}</h4>
+          <p>Scenes in this chapter: {sceneCountInChapter}</p>
+
+          <button onClick={() => runScene("next")} disabled={loading}>Write Next Scene</button>
+
+          {currentScene && (
+            <div>
+              <h3>Current Scene</h3>
+              <p style={{ whiteSpace: "pre-wrap" }}>{currentScene}</p>
+
+              <button onClick={() => runScene("continue")}>Continue</button>
+              <button onClick={() => runScene("rewrite")} style={{ marginLeft: 10 }}>Rewrite</button>
+              <button onClick={acceptScene} style={{ marginLeft: 10 }}>Accept</button>
+
+              <textarea
+                placeholder="Feedback..."
+                value={feedback}
+                onChange={(e) => setFeedback(e.target.value)}
+                style={{ width: "100%", height: 80, marginTop: 10 }}
+              />
+            </div>
+          )}
+
+          {scenes.length > 0 && (
+            <div>
+              <h3>Story So Far</h3>
+              <button onClick={exportBook}>Copy Full Book</button>
+              {scenes.map((s, i) => (
+                <p key={i} style={{ whiteSpace: "pre-wrap" }}>{s}</p>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
