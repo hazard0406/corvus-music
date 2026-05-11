@@ -35,8 +35,24 @@
 
       const safeJSONParse = (text) => {
         try {
-          if (!text || typeof text !== "string") throw new Error("Empty response");
-          const cleaned = text.replace(/```json|```/g, "").trim();
+          if (!text || typeof text !== "string") {
+            throw new Error("Empty response");
+          }
+
+          // remove markdown formatting
+          let cleaned = text
+            .replace(/```json/g, "")
+            .replace(/```/g, "")
+            .trim();
+
+          // extract JSON object only
+          const firstBrace = cleaned.indexOf("{");
+          const lastBrace = cleaned.lastIndexOf("}");
+
+          if (firstBrace !== -1 && lastBrace !== -1) {
+            cleaned = cleaned.slice(firstBrace, lastBrace + 1);
+          }
+
           return JSON.parse(cleaned);
         } catch (e) {
           console.error("JSON parse failed:", text);
@@ -130,27 +146,39 @@
         }
       };
 
-      const generateOutline = async () => {
-        if (!apiKey.trim()) {
-          setError("Please enter your Gemini API key.");
-          return;
-        }
+      const text = await callGemini(`
+      You are a professional novel outliner.
 
-        setLoading(true);
-        setError("");
+      Create a complete novel outline.
 
-        const text = await callGemini(`Create a novel outline for this idea:\n${idea}\n\nSeries context:\n${seriesContext}\n\nReturn ONLY valid JSON:\n{"title":"","chapters":[{"number":1,"title":"","summary":""}]}`);
+      BOOK IDEA:
+      ${idea}
 
-        const parsed = safeJSONParse(text);
+      SERIES CONTEXT:
+      ${seriesContext}
 
-        if (!parsed) {
-          setError("Failed to parse outline. Try again.");
-        } else {
-          setOutline(parsed);
-        }
+      IMPORTANT RULES:
+      - Return ONLY valid JSON
+      - No markdown
+      - No explanations
+      - No extra text
+      - No code blocks
+      - Use double quotes only
+      - Generate exactly 10 chapters
 
-        setLoading(false);
-      };
+      Use this exact structure:
+
+      {
+        "title": "Book Title",
+        "chapters": [
+          {
+            "number": 1,
+            "title": "Chapter Title",
+            "summary": "Chapter summary"
+          }
+        ]
+      }
+      `);
 
       const summarizeStory = async () => {
         if (scenes.length < 3) return "";
